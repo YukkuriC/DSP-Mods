@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace DSP_Mods.CopyInserters
 {
-    [BepInPlugin("org.fezeral.plugins.copyinserters", "Copy Inserters Plug-In", "1.1.0.0")]
+    [BepInPlugin("org.fezeral.plugins.copyinserters", "Copy Inserters Plug-In", "1.0.0.0")]
     class CopyInserters : BaseUnityPlugin
     {
         private static PlayerController _pc;
@@ -50,7 +50,7 @@ namespace DSP_Mods.CopyInserters
             public static void PlayerAction_BuildNotifyBuiltPrefix(int postObjId, PlanetAuxData ___planetAux)
             {
                 var entityBuilt = pc.player.factory.entityPool[postObjId];
-                                
+
                 ModelProto modelProto = LDB.models.Select(entityBuilt.modelIndex);
                 var prefabDesc = modelProto.prefabDesc;
                 if (!prefabDesc.isInserter)
@@ -59,7 +59,7 @@ namespace DSP_Mods.CopyInserters
                     if (PatchCopyInserters.pendingInserters.Count > 0)
                     {
                         var factory = pc.player.factory;
-                        for(int i = pendingInserters.Count -1; i >= 0; i--) // Reverse loop for removing found elements
+                        for (int i = pendingInserters.Count - 1; i >= 0; i--) // Reverse loop for removing found elements
                         {
                             var pi = pendingInserters[i];
                             // Is the NotifyBuilt assembler in the expected position for this pending inserter?
@@ -68,34 +68,22 @@ namespace DSP_Mods.CopyInserters
                             {
                                 var assemblerId = entityBuilt.id;
                                 //Debug.Log($"!!! found assembler id={assemblerId} at Pos={entityBuilt.pos} expected {pi.AssemblerPos} distance={distance}");
-                                
+
                                 // Create inserter Prebuild data
                                 var pbdata = new PrebuildData();
                                 pbdata.protoId = (short)pi.ci.protoId;
                                 pbdata.modelIndex = (short)LDB.items.Select(pi.ci.protoId).ModelIndex;
                                 pbdata.modelId = factory.entityPool[pi.otherId].modelId;
-                                pbdata.rot = pi.ci.rot;
-                                pbdata.rot2 = pi.ci.rot2;
 
-                                // Copy rot from building, smelters have problems here
-                                pbdata.rot = entityBuilt.rot;
-                                pbdata.rot2 = entityBuilt.rot;
-                                
                                 pbdata.insertOffset = pi.ci.insertOffset;
                                 pbdata.pickOffset = pi.ci.pickOffset;
                                 pbdata.filterId = pi.ci.filterId;
-                                
-                                // Calculate inserter start and end positions from stored delta's
-                                pbdata.pos = entityBuilt.pos + pi.ci.posDelta;
-                                pbdata.pos = ___planetAux.Snap(pbdata.pos, true, false);
-                                pbdata.pos2 = ___planetAux.Snap(pbdata.pos + pi.ci.pos2delta, true, false);
 
-                                // Reverse positions for inserters that unload the copied building
-                                if (!pi.ci.incoming)
-                                {
-                                    pbdata.pos = ___planetAux.Snap(entityBuilt.pos - pi.ci.posDelta, true, false);
-                                    pbdata.pos2 = ___planetAux.Snap(pbdata.pos + pi.ci.pos2delta, true, false);
-                                }
+                                // YukkuriC: recover absolute transforms
+                                Helper.AbsTransform(entityBuilt.pos, pi.ci.posDelta, pi.ci.rot, out pbdata.pos, out pbdata.rot);
+                                Helper.AbsTransform(entityBuilt.pos, pi.ci.pos2delta, pi.ci.rot2, out pbdata.pos2, out pbdata.rot2);
+                                pbdata.pos = ___planetAux.Snap(pbdata.pos, true, false);
+                                pbdata.pos2 = ___planetAux.Snap(pbdata.pos2, true, false);
 
                                 // Check the player has the item in inventory, no cheating here
                                 var itemcount = pc.player.package.GetItemCount(pi.ci.protoId);
@@ -108,12 +96,12 @@ namespace DSP_Mods.CopyInserters
 
                                     // Otherslot -1 will try to find one, otherwise could cache this from original assembler if it causes problems
                                     if (pi.ci.incoming)
-                                    {                                        
+                                    {
                                         factory.WriteObjectConn(-pbCursor, 0, true, assemblerId, -1); // assembler connection                                        
                                         factory.WriteObjectConn(-pbCursor, 1, false, pi.otherId, -1); // other connection
                                     }
                                     else
-                                    {                                        
+                                    {
                                         factory.WriteObjectConn(-pbCursor, 0, false, assemblerId, -1); // assembler connection                                        
                                         factory.WriteObjectConn(-pbCursor, 1, true, pi.otherId, -1); // other connection
                                     }
@@ -122,7 +110,7 @@ namespace DSP_Mods.CopyInserters
                             }
                         }
                     }
-                }                
+                }
             }
 
             /// <summary>
@@ -133,11 +121,10 @@ namespace DSP_Mods.CopyInserters
             public static void PlayerAction_BuildSetCopyInfoPostfix(ref PlanetFactory ___factory, int objectId, PlanetAuxData ___planetAux)
             {
                 cachedInserters.Clear(); // Remove previous copy info
-                if (objectId < 0) // Copied item is a ghost, no inserters to cache
-                    return;
 
                 var sourceEntity = objectId;
                 var sourcePos = ___factory.entityPool[objectId].pos;
+                var sourceRot = ___factory.entityPool[objectId].rot;
                 // Find connected inserters                
                 int matches = 0;
                 var inserterPool = ___factory.factorySystem.inserterPool;
@@ -174,15 +161,20 @@ namespace DSP_Mods.CopyInserters
 
                             // Cache info for this inserter
                             var ci = new CachedInserter();
-                            ci.otherDelta = (otherPos - sourcePos); // Delta from copied building to other belt/building
                             ci.incoming = incoming;
                             ci.protoId = inserterType;
                             ci.rot = ___factory.entityPool[inserter.entityId].rot;
                             ci.rot2 = inserter.rot2;
-                            ci.pos2delta = (inserter.pos2 - entityPool[inserter.entityId].pos); // Delta from inserter pos2 to copied building
-                            var posDelta = entityPool[inserter.entityId].pos - sourcePos; // Delta from copied building to inserter pos
-                            if (!incoming) posDelta = sourcePos - entityPool[inserter.entityId].pos; // Reverse for outgoing inserters
-                            ci.posDelta = posDelta;
+                            ci.pos2delta = inserter.pos2; // YukkuriC: record abs pos first
+                            ci.posDelta = entityPool[inserter.entityId].pos;
+
+                            // YukkuriC: dump relative transforms
+                            Helper.RelTransform(sourcePos,
+                                entityPool[inserter.entityId].pos, ___factory.entityPool[inserter.entityId].rot,
+                                out ci.posDelta, out ci.rot);
+                            Helper.RelTransform(sourcePos,
+                                inserter.pos2, inserter.rot2,
+                                out ci.pos2delta, out ci.rot2);
 
                             // not important?
                             ci.pickOffset = inserter.pickOffset;
@@ -190,7 +182,7 @@ namespace DSP_Mods.CopyInserters
                             // needed for pose?
                             ci.t1 = inserter.t1;
                             ci.t2 = inserter.t2;
-                            
+
 
                             ci.filterId = inserter.filter;
                             ci.snapMoves = snapMoves;
@@ -210,7 +202,6 @@ namespace DSP_Mods.CopyInserters
                 public bool incoming;
                 public Vector3 posDelta;
                 public Vector3 pos2delta;
-                public Vector3 otherDelta;
                 public Quaternion rot;
                 public Quaternion rot2;
                 public short pickOffset;
@@ -269,7 +260,7 @@ namespace DSP_Mods.CopyInserters
                                 }
                             }
                         }
-                        
+
                         if (otherId != 0)
                         {
                             // Order an inserter
@@ -292,6 +283,55 @@ namespace DSP_Mods.CopyInserters
             public static void PlayerAction_BuildResetCopyInfoPostfix()
             {
                 PatchCopyInserters.cachedInserters.Clear();
+            }
+        }
+
+        // YukkuriC: calculate absolute/relative transform using UnityEngine
+        public static class Helper
+        {
+            static GameObject CreateGO(Vector3 pos, Quaternion rot)
+            {
+                var go = new GameObject();
+                var trans = go.transform;
+                trans.position = pos;
+                trans.rotation = rot;
+                return go;
+            }
+
+            public static void RelTransform(Vector3 rootPos, Vector3 absPos, Quaternion absRot, out Vector3 relPos, out Quaternion relRot)
+            {
+                var rootRot = Quaternion.LookRotation(rootPos);
+                // set transforms
+                GameObject rootGO = CreateGO(rootPos, rootRot),
+                           subGO = CreateGO(absPos, absRot);
+                Transform rootTrans = rootGO.transform,
+                          subTrans = subGO.transform;
+                subTrans.parent = rootTrans;
+                // calc result
+                relPos = subTrans.localPosition;
+                relRot = subTrans.localRotation;
+                // release objects
+                Destroy(rootGO);
+                Destroy(subGO);
+            }
+
+            public static void AbsTransform(Vector3 rootPos, Vector3 relPos, Quaternion relRot, out Vector3 absPos, out Quaternion absRot)
+            {
+                var rootRot = Quaternion.LookRotation(rootPos);
+                // set transforms
+                GameObject rootGO = CreateGO(rootPos, rootRot),
+                           subGO = CreateGO(rootPos, rootRot);
+                Transform rootTrans = rootGO.transform,
+                          subTrans = subGO.transform;
+                subTrans.parent = rootTrans;
+                // calc result
+                subTrans.localPosition = relPos;
+                subTrans.localRotation = relRot;
+                absPos = subTrans.position;
+                absRot = subTrans.rotation;
+                // release objects
+                Destroy(rootGO);
+                Destroy(subGO);
             }
         }
     }
